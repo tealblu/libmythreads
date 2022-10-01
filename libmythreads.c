@@ -9,13 +9,78 @@
  * 
  */
 
+/* On Mac OS X, _XOPEN_SOURCE must be defined before including ucontext.h.
+Otherwise, getcontext/swapcontext causes memory corruption. See:
+http://lists.apple.com/archives/darwin-dev/2008/Jan/msg00229.html */
+#ifdef __APPLE__
+#define _XOPEN_SOURCE
+#endif
+
 #include "mythreads.h"
+#include <stdbool.h>
+#include <ucontext.h>
+#include <malloc.h>
+#include <stdio.h>
+#include <assert.h>
+
+// Definitions-----------------------------------------------------------------
+#define MAX_NUM_THREADS 32768 // 2^15, found via 'cat /proc/sys/kernel/threads-max'
+
+// Struct to hold thread information
+typedef struct thread
+{
+    long id; /* thread id */
+	ucontext_t context; /* Stores the current context */
+	int active; /* A boolean flag, 0 if it is not active, 1 if it is */
+	void* stack; /* The stack for the thread */
+} thread;
+
+// Helper Functions and Data--------------------------------------------------
+static long counter; // counter for thread ids
+
+/**
+ * @brief Get the next thread id
+ * 
+ * @return counter incremented by 1
+ */
+int getThreadID() {
+    return counter++;
+}
+
+// List of threads
+static thread threadList[MAX_NUM_THREADS];
+
+// The number of extant threads
+static int numThreads;
+// The index of the currently running thread
+static int currentThread = -1;
+
+static void runThread(thFuncPtr funcPtr, void *argPtr)
+{
+	threadList[currentThread].active = 1;
+	funcPtr(argPtr);
+	threadList[currentThread].active = 0;
+	
+	/* Yield control, but because active == 0, this will free the fiber */
+	threadYield();
+}
+
+// Thread Control Block--------------------------------------------------------
 
 /**
  * @brief Called to initialize the thread library.
  */
 extern void threadInit() {
-    // function body
+    // initialize the thread library
+    // good place to initialize data structures
+
+    counter = 0; // initialize the thread id counter
+    numThreads = 0; // initialize the number of threads
+
+    // ensure all threads are set as inactive
+    for (int i = 0; i < MAX_NUM_THREADS; ++ i ) {
+	    threadList[i].active = 0;
+	}
 }
 
 /**
@@ -29,10 +94,52 @@ extern void threadInit() {
  * @return pid pid of the new thread
  */
 extern int threadCreate(thFuncPtr funcPtr, void *argPtr) {
-    int pid; // <- generate a unique pid for the new thread here
-    // function body
+    // setup the thread info
+    bool threadSuccess = true;
+    long id = getThreadID(); // get unique thread ID
+    ucontext_t currentContext;
+    getcontext(&currentContext); // get the current context
 
-    return pid;
+    // create new thread with stack size STACK_SIZE
+    thread newThread = {
+        .id = id,
+        .context = currentContext,
+        .active = 1,
+        .stack = malloc(STACK_SIZE)
+    };
+
+    // set the stack for the new thread
+    newThread.context.uc_stack.ss_sp = threadList[numThreads].stack;
+	newThread.context.uc_stack.ss_size = STACK_SIZE;
+	newThread.context.uc_stack.ss_flags = 0;
+
+    // make the new thread's context a child of the current thread
+    newThread.context.uc_link = &threadList[currentThread].context;
+
+    // add new thread to the list of threads
+    threadList[numThreads] = newThread;
+
+    if (threadList[numThreads].stack == 0) {
+        printf("Error: Could not allocate stack for thread %ld", id);
+		threadSuccess = false;
+	}
+
+    // make the new thread the current thread
+    currentThread = id;
+
+    // increment the number of threads
+    ++numThreads;
+
+    // create context for new thread and execute function
+    makecontext(&newThread.context, (void (*)(void)) &runThread, 2, funcPtr, argPtr);
+
+    // if the new thread was successfully created, swap to it
+    if (threadSuccess) {
+        swapcontext(&currentContext, &newThread.context);
+        return id;
+    } else {
+        return -1;
+    }
 }
 
 /**
@@ -65,6 +172,8 @@ extern void threadJoin(int thread_id, void **result) {
 extern void threadExit(void *result) {
     // function body
 }
+
+// Thread synchronization block------------------------------------------------
 
 /**
  * @brief Blocks (waits) until function is able to acquire the lock.
@@ -110,3 +219,19 @@ extern void threadSignal(int lockNum, int conditionNum) {
 }
 
 extern int interruptsAreDisabled; // <- this variable is set to 1 if interrupts are disabled, 0 otherwise
+
+/**
+ * @brief Disables interrupts.
+ */
+static void interruptDisable () {
+    assert (! interruptsAreDisabled ) ;
+    interruptsAreDisabled = 1;
+}
+
+/**
+ * @brief Enables interrupts.
+ */
+static void interruptEnable () {
+    assert ( interruptsAreDisabled ) ;
+    interruptsAreDisabled = 0;
+}
