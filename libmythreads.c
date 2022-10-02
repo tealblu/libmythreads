@@ -47,21 +47,29 @@ int getThreadID() {
     return counter++;
 }
 
+// The main context
+static ucontext_t mainContext;
 // List of threads
 static thread threadList[MAX_NUM_THREADS];
-
 // The number of extant threads
 static int numThreads;
 // The index of the currently running thread
 static int currentThread = -1;
+// Boolean to indicate whether we are inside a thread
+bool inThread = false;
 
 static void runThread(thFuncPtr funcPtr, void *argPtr)
 {
+    // set the current thread to active
 	threadList[currentThread].active = 1;
+
+    // run the thread
 	funcPtr(argPtr);
+
+    // set the thread to inactive
 	threadList[currentThread].active = 0;
 	
-	/* Yield control, but because active == 0, this will free the fiber */
+	// yield control
 	threadYield();
 }
 
@@ -81,6 +89,9 @@ extern void threadInit() {
     for (int i = 0; i < MAX_NUM_THREADS; ++ i ) {
 	    threadList[i].active = 0;
 	}
+
+    // get the main context
+    getcontext(&mainContext);
 }
 
 /**
@@ -113,6 +124,9 @@ extern int threadCreate(thFuncPtr funcPtr, void *argPtr) {
 	newThread.context.uc_stack.ss_size = STACK_SIZE;
 	newThread.context.uc_stack.ss_flags = 0;
 
+    // make the new thread the current thread
+    currentThread = id;
+
     // make the new thread's context a child of the current thread
     newThread.context.uc_link = &threadList[currentThread].context;
 
@@ -124,16 +138,13 @@ extern int threadCreate(thFuncPtr funcPtr, void *argPtr) {
 		threadSuccess = false;
 	}
 
-    // make the new thread the current thread
-    currentThread = id;
-
     // increment the number of threads
     ++numThreads;
 
     // create context for new thread and execute function
     makecontext(&newThread.context, (void (*)(void)) &runThread, 2, funcPtr, argPtr);
 
-    // if the new thread was successfully created, swap to it
+    // if the new thread was successfully created, swap to it. otherwise, return -1 to indicate non-success
     if (threadSuccess) {
         swapcontext(&currentContext, &newThread.context);
         return id;
@@ -147,7 +158,37 @@ extern int threadCreate(thFuncPtr funcPtr, void *argPtr) {
  *  Saves the current context and selects the next thread to run.
  */
 extern void threadYield() {
-    // function body
+    // if we are in a thread, swap to main context. otherwise yield thread
+	if (inThread) {
+        swapcontext(&threadList[currentThread].context, &mainContext);
+	} else {
+		if (numThreads == 0) return; // if there are no threads, return
+	
+		// call the next thread
+		currentThread = (currentThread + 1) % numThreads;
+		
+		// if the next thread is not active, call the next thread
+		inThread = 1;
+		swapcontext( &mainContext, &threadList[currentThread].context );
+		inThread = 0;
+		
+        // cleanup the thread once it finishes
+		if (threadList[currentThread].active == 0)
+		{
+			// Free the thread's stack
+			free(threadList[currentThread].stack );
+			
+			// Swap the last thread with the current thread
+			--numThreads;
+			if (currentThread != numThreads)
+			{
+				threadList[currentThread] = threadList[numThreads];
+			}
+			threadList[numThreads].active = 0;		
+		}
+		
+	}
+	return;
 }
 
 /**
