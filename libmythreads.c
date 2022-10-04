@@ -158,23 +158,23 @@ extern int threadCreate(thFuncPtr funcPtr, void *argPtr) {
  *  Saves the current context and selects the next thread to run.
  */
 extern void threadYield() {
-    // if we are in a thread, swap to main context. otherwise yield thread
+    // if we are in a thread, swap to main context. otherwise run thread shutdown process
 	if (inThread) {
         swapcontext(&threadList[currentThread].context, &mainContext);
+        
 	} else {
 		if (numThreads == 0) return; // if there are no threads, return
 	
-		// call the next thread
+		// get the next thread to run
 		currentThread = (currentThread + 1) % numThreads;
 		
-		// if the next thread is not active, call the next thread
+		// call the next thread
 		inThread = 1;
 		swapcontext( &mainContext, &threadList[currentThread].context );
 		inThread = 0;
 		
         // cleanup the thread once it finishes
-		if (threadList[currentThread].active == 0)
-		{
+		if (threadList[currentThread].active == 0) {
 			// Free the thread's stack
 			free(threadList[currentThread].stack );
 			
