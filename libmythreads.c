@@ -33,20 +33,12 @@ typedef struct thread
 	ucontext_t context; /* Stores the current context */
 	int active; /* A boolean flag, 0 if it is not active, 1 if it is */
 	void* stack; /* The stack for the thread */
+    int returnValue; /* The return value of the thread */
 } thread;
 
 // Helper Functions and Data--------------------------------------------------
-static long counter; // counter for thread ids
-
-/**
- * @brief Get the next thread id
- * 
- * @return counter incremented by 1
- */
-int getThreadID() {
-    return counter++;
-}
-
+// Counter to keep track of the number of threads
+static long counter;
 // The main context
 static ucontext_t mainContext;
 // List of threads
@@ -58,6 +50,21 @@ static int currentThread = -1;
 // Boolean to indicate whether we are inside a thread
 bool inThread = false;
 
+/**
+ * @brief Get the next thread id
+ * 
+ * @return counter incremented by 1
+ */
+int getThreadID() {
+    return counter++;
+}
+
+/**
+ * @brief Run function pointed to by funcPtr in current thread
+ * 
+ * @param funcPtr Pointer to function to run
+ * @param argPtr Pointer to argument to pass to function
+ */
 static void runThread(thFuncPtr funcPtr, void *argPtr)
 {
     // set the current thread to active
@@ -194,7 +201,7 @@ extern void threadYield() {
 /**
  * @brief Waits until thread corresponding to thread_id exits.
  *  If result is not NULL, then the thread function's return value is 
- *  stored at the address pointed to by result. Otherwise, the thread's
+ *  stored at the address pointed to by 'result'. Otherwise, the thread's
  *  return value is ignored. If the thread specified by thread_id has
  *  already exited, or does not exist, then threadJoin returns immediately.
  * 
@@ -202,7 +209,27 @@ extern void threadYield() {
  * @param result result of thread specified by thread_id
  */
 extern void threadJoin(int thread_id, void **result) {
-    // function body
+    // check for thread joining itself
+    if (thread_id == currentThread) {
+        printf("Error: Thread %d cannot join itself", thread_id);
+        return;
+    }
+
+    // ensure thread is created
+    if (threadList[thread_id].active == 0) {
+        printf("Error: Thread %d does not exist", thread_id);
+        return;
+    }
+
+    // wait for thread to finish
+    while (threadList[thread_id].active == 1) {
+        threadYield();
+    }
+
+    // if result is not null, store the thread's return value at the address pointed to by result
+    if (result != NULL) {
+        *result = threadList[thread_id].returnValue;
+    }
 }
 
 /**
