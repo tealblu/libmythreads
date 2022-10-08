@@ -35,16 +35,28 @@ typedef struct thread
     int returnValue; /* The return value of the thread */
 } thread;
 
+// condition variable struct
+typedef struct condition
+{
+    int numWaiting; /* The number of threads waiting on the condition */
+    int condNum; /* The condition number */
+    bool signaled; /* A boolean flag, 0 if it is not signaled, 1 if it is */
+} condition;
+
 // lock struct
 typedef struct lock
 {
-    int locked; /* A boolean flag, 0 if it is not locked, 1 if it is */
+    bool locked; /* A boolean flag, 0 if it is not locked, 1 if it is */
     thread* owner; /* The thread that owns the lock */
     int lockNum; /* The lock number */
+    condition conditions[CONDITIONS_PER_LOCK]; /* The condition variables for the lock */
 } lock;
 
 // list of locks
-lock* locks[MAX_NUM_THREADS];
+lock locks[NUM_LOCKS];
+
+// list of conditions
+condition conditions[MAX_NUM_THREADS];
 
 // Counter to keep track of the number of threads
 static long counter;
@@ -269,13 +281,13 @@ extern void threadExit(void *result) {
  */
 extern void threadLock(int lockNum) {
     // ensure lockNum is valid
-    if (lockNum < 0 || lockNum >= MAX_LOCKS) {
+    if (lockNum < 0 || lockNum >= NUM_LOCKS) {
         printf("Error: Invalid lock number %d", lockNum);
         return;
     }
 
     // lock the lock
-    lockList[lockNum].locked = 1;
+    locks[lockNum].locked = 1;
 }
 
 /**
@@ -285,13 +297,13 @@ extern void threadLock(int lockNum) {
  */
 extern void threadUnlock(int lockNum) {
     // ensure lockNum is valid
-    if (lockNum < 0 || lockNum >= MAX_LOCKS) {
+    if (lockNum < 0 || lockNum >= NUM_LOCKS) {
         printf("Error: Invalid lock number %d", lockNum);
         return;
     }
 
     // unlock the lock
-    lockList[lockNum].locked = 0;
+    locks[lockNum].locked = 0;
 }
 
 /**
@@ -305,7 +317,37 @@ extern void threadUnlock(int lockNum) {
  * @param conditionNum number indicating which condition variable to wait on (NOT THE CONDITION VARIABLE ITSELF)
  */
 extern void threadWait(int lockNum, int conditionNum) {
-    // function body
+    // ensure lockNum is valid
+    if (lockNum < 0 || lockNum >= NUM_LOCKS) {
+        printf("Error: Invalid lock number %d", lockNum);
+        return;
+    }
+
+    // ensure conditionNum is valid
+    if (conditionNum < 0 || conditionNum >= CONDITIONS_PER_LOCK) {
+        printf("Error: Invalid condition number %d", conditionNum);
+        return;
+    }
+
+    // ensure lock is locked
+    if (locks[lockNum].locked == 0) {
+        printf("Error: Lock %d is not locked", lockNum);
+        return;
+    }
+
+    // unlock the lock
+    locks[lockNum].locked = 0;
+
+    // wait for the condition to be signaled
+    while (locks[lockNum].conditions[conditionNum].signaled == 0) {
+        threadYield();
+    }
+
+    // lock the lock
+    locks[lockNum].locked = 1;
+
+    // reset the condition
+    conditions[conditionNum].signaled = 0;        
 }
 
 /**
@@ -316,7 +358,20 @@ extern void threadWait(int lockNum, int conditionNum) {
  * @param conditionNum number indicating which condition variable to wait on (NOT THE CONDITION VARIABLE ITSELF)
  */
 extern void threadSignal(int lockNum, int conditionNum) {
-    // function body
+    // ensure lockNum is valid
+    if (lockNum < 0 || lockNum >= NUM_LOCKS) {
+        printf("Error: Invalid lock number %d", lockNum);
+        return;
+    }
+
+    // ensure conditionNum is valid
+    if (conditionNum < 0 || conditionNum >= CONDITIONS_PER_LOCK) {
+        printf("Error: Invalid condition number %d", conditionNum);
+        return;
+    }
+
+    // signal the condition
+    locks[lockNum].conditions[conditionNum].signaled = 1;
 }
 
 extern int interruptsAreDisabled; // <- this variable is set to 1 if interrupts are disabled, 0 otherwise
