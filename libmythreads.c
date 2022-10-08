@@ -23,7 +23,6 @@ http://lists.apple.com/archives/darwin-dev/2008/Jan/msg00229.html */
 #include <stdio.h>
 #include <assert.h>
 
-// Definitions-----------------------------------------------------------------
 #define MAX_NUM_THREADS 32768 // 2^15, found via 'cat /proc/sys/kernel/threads-max'
 
 // Struct to hold thread information
@@ -36,7 +35,17 @@ typedef struct thread
     int returnValue; /* The return value of the thread */
 } thread;
 
-// Helper Functions and Data--------------------------------------------------
+// lock struct
+typedef struct lock
+{
+    int locked; /* A boolean flag, 0 if it is not locked, 1 if it is */
+    thread* owner; /* The thread that owns the lock */
+    int lockNum; /* The lock number */
+} lock;
+
+// list of locks
+lock* locks[MAX_NUM_THREADS];
+
 // Counter to keep track of the number of threads
 static long counter;
 // The main context
@@ -238,7 +247,17 @@ extern void threadJoin(int thread_id, void **result) {
  * @param result result of the currently running thread
  */
 extern void threadExit(void *result) {
-    // function body
+    // ensure we are in main context
+    if (inThread) {
+        printf("Error: Cannot exit thread from within thread");
+        return;
+    }
+
+    // set the current thread's return value
+    threadList[currentThread].returnValue = result;
+
+    // yield control
+    threadYield();
 }
 
 // Thread synchronization block------------------------------------------------
@@ -249,7 +268,14 @@ extern void threadExit(void *result) {
  * @param lockNum number indicating which lock is to be locked (NOT THE LOCK ITSELF)
  */
 extern void threadLock(int lockNum) {
-    // function body
+    // ensure lockNum is valid
+    if (lockNum < 0 || lockNum >= MAX_LOCKS) {
+        printf("Error: Invalid lock number %d", lockNum);
+        return;
+    }
+
+    // lock the lock
+    lockList[lockNum].locked = 1;
 }
 
 /**
@@ -258,7 +284,14 @@ extern void threadLock(int lockNum) {
  * @param lockNum number indicating which lock is to be unlocked (NOT THE LOCK ITSELF)
  */
 extern void threadUnlock(int lockNum) {
-    // function body
+    // ensure lockNum is valid
+    if (lockNum < 0 || lockNum >= MAX_LOCKS) {
+        printf("Error: Invalid lock number %d", lockNum);
+        return;
+    }
+
+    // unlock the lock
+    lockList[lockNum].locked = 0;
 }
 
 /**
