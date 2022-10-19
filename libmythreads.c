@@ -19,7 +19,7 @@ http://lists.apple.com/archives/darwin-dev/2008/Jan/msg00229.html */
 #include "mythreads.h"
 #include <stdbool.h>
 #include <ucontext.h>
-#include <malloc.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <assert.h>
 
@@ -32,7 +32,7 @@ typedef struct thread
 	ucontext_t context; /* Stores the current context */
 	int active; /* A boolean flag, 0 if it is not active, 1 if it is */
 	void* stack; /* The stack for the thread */
-    int returnValue; /* The return value of the thread */
+    void* returnValue; /* The return value of the thread */
 } thread;
 
 // condition variable struct
@@ -54,22 +54,39 @@ typedef struct lock
 
 // list of locks
 lock locks[NUM_LOCKS];
-
 // list of conditions
 condition conditions[MAX_NUM_THREADS];
+// List of threads
+static thread threadList[MAX_NUM_THREADS];
 
 // Counter to keep track of the number of threads
 static long counter;
 // The main context
 static ucontext_t mainContext;
-// List of threads
-static thread threadList[MAX_NUM_THREADS];
 // The number of extant threads
 static int numThreads;
 // The index of the currently running thread
 static int currentThread = -1;
 // Boolean to indicate whether we are inside a thread
 bool inThread = false;
+
+int interruptsAreDisabled; // <- this variable is set to 1 if interrupts are disabled, 0 otherwise
+
+/**
+ * @brief Disables interrupts.
+ */
+static void interruptDisable () {
+    //assert (! interruptsAreDisabled ) ;
+    interruptsAreDisabled = 1;
+}
+
+/**
+ * @brief Enables interrupts.
+ */
+static void interruptEnable () {
+    //assert ( interruptsAreDisabled ) ;
+    interruptsAreDisabled = 0;
+}
 
 /**
  * @brief Get the next thread id
@@ -88,20 +105,25 @@ int getThreadID() {
  */
 static void runThread(thFuncPtr funcPtr, void *argPtr)
 {
+    inThread = true;
+
     // set the current thread to active
 	threadList[currentThread].active = 1;
 
     // run the thread
-	funcPtr(argPtr);
+    void* result = funcPtr(argPtr);
 
     // set the thread to inactive
 	threadList[currentThread].active = 0;
+
+    // set the return value
+    threadList[currentThread].returnValue = result;
 	
 	// yield control
 	threadYield();
 }
 
-// Thread Control Block--------------------------------------------------------
+// Thread Control--------------------------------------------------------
 
 /**
  * @brief Called to initialize the thread library.
@@ -133,6 +155,7 @@ extern void threadInit() {
  * @return pid pid of the new thread
  */
 extern int threadCreate(thFuncPtr funcPtr, void *argPtr) {
+
     // setup the thread info
     bool threadSuccess = true;
     long id = getThreadID(); // get unique thread ID
@@ -147,36 +170,38 @@ extern int threadCreate(thFuncPtr funcPtr, void *argPtr) {
         .stack = malloc(STACK_SIZE)
     };
 
-    // set the stack for the new thread
-    newThread.context.uc_stack.ss_sp = threadList[numThreads].stack;
-	newThread.context.uc_stack.ss_size = STACK_SIZE;
-	newThread.context.uc_stack.ss_flags = 0;
-
     // make the new thread the current thread
     currentThread = id;
-
-    // make the new thread's context a child of the current thread
-    newThread.context.uc_link = &threadList[currentThread].context;
 
     // add new thread to the list of threads
     threadList[numThreads] = newThread;
 
+    // set the stack for the new thread
+    newThread.context.uc_link = 0;
+    newThread.context.uc_stack = (stack_t) {
+        .ss_sp = threadList[numThreads].stack,
+        .ss_size = STACK_SIZE,
+        .ss_flags = 0
+    };
     if (threadList[numThreads].stack == 0) {
         printf("Error: Could not allocate stack for thread %ld", id);
 		threadSuccess = false;
 	}
 
-    // increment the number of threads
-    ++numThreads;
-
-    // create context for new thread and execute function
-    makecontext(&newThread.context, (void (*)(void)) &runThread, 2, funcPtr, argPtr);
-
     // if the new thread was successfully created, swap to it. otherwise, return -1 to indicate non-success
     if (threadSuccess) {
+        // increment the number of threads
+        ++numThreads;
+
+        // create context for new thread and execute function
+        makecontext(&newThread.context, (void (*)(void)) &runThread, 2, funcPtr, argPtr);
+        // swap to the new thread
+        interruptDisable();
         swapcontext(&currentContext, &newThread.context);
+        interruptEnable();
         return id;
     } else {
+        threadList[numThreads] = (thread) {0};
         return -1;
     }
 }
@@ -186,9 +211,14 @@ extern int threadCreate(thFuncPtr funcPtr, void *argPtr) {
  *  Saves the current context and selects the next thread to run.
  */
 extern void threadYield() {
+    // disable interrupts
+    interruptDisable();
+
     // if we are in a thread, swap to main context. otherwise run thread shutdown process
 	if (inThread) {
+        interruptDisable();
         swapcontext(&threadList[currentThread].context, &mainContext);
+        interruptEnable();
         
 	} else {
 		if (numThreads == 0) return; // if there are no threads, return
@@ -198,7 +228,9 @@ extern void threadYield() {
 		
 		// call the next thread
 		inThread = 1;
+        interruptDisable();
 		swapcontext( &mainContext, &threadList[currentThread].context );
+        interruptEnable();
 		inThread = 0;
 		
         // cleanup the thread once it finishes
@@ -206,16 +238,15 @@ extern void threadYield() {
 			// Free the thread's stack
 			free(threadList[currentThread].stack );
 			
-			// Swap the last thread with the current thread
-			--numThreads;
-			if (currentThread != numThreads)
-			{
-				threadList[currentThread] = threadList[numThreads];
-			}
-			threadList[numThreads].active = 0;		
+			// Swap the last thread in the list with the current thread
+            threadList[currentThread] = threadList[numThreads - 1];
+            threadList[numThreads - 1] = (thread) {0};
 		}
 		
 	}
+
+    // enable interrupts
+    interruptEnable();
 	return;
 }
 
@@ -232,13 +263,13 @@ extern void threadYield() {
 extern void threadJoin(int thread_id, void **result) {
     // check for thread joining itself
     if (thread_id == currentThread) {
-        printf("Error: Thread %d cannot join itself", thread_id);
+        printf("Error: Thread %d cannot join itself\n", thread_id);
         return;
     }
 
     // ensure thread is created
     if (threadList[thread_id].active == 0) {
-        printf("Error: Thread %d does not exist", thread_id);
+        printf("Error: Thread %d is not active\n", thread_id);
         return;
     }
 
@@ -261,7 +292,7 @@ extern void threadJoin(int thread_id, void **result) {
 extern void threadExit(void *result) {
     // ensure we are in main context
     if (inThread) {
-        printf("Error: Cannot exit thread from within thread");
+        printf("Error: Cannot exit thread from within thread\n");
         return;
     }
 
@@ -282,7 +313,7 @@ extern void threadExit(void *result) {
 extern void threadLock(int lockNum) {
     // ensure lockNum is valid
     if (lockNum < 0 || lockNum >= NUM_LOCKS) {
-        printf("Error: Invalid lock number %d", lockNum);
+        printf("Error: Invalid lock number %d\n", lockNum);
         return;
     }
 
@@ -298,7 +329,7 @@ extern void threadLock(int lockNum) {
 extern void threadUnlock(int lockNum) {
     // ensure lockNum is valid
     if (lockNum < 0 || lockNum >= NUM_LOCKS) {
-        printf("Error: Invalid lock number %d", lockNum);
+        printf("Error: Invalid lock number %d\n", lockNum);
         return;
     }
 
@@ -319,19 +350,19 @@ extern void threadUnlock(int lockNum) {
 extern void threadWait(int lockNum, int conditionNum) {
     // ensure lockNum is valid
     if (lockNum < 0 || lockNum >= NUM_LOCKS) {
-        printf("Error: Invalid lock number %d", lockNum);
+        printf("Error: Invalid lock number %d\n", lockNum);
         return;
     }
 
     // ensure conditionNum is valid
     if (conditionNum < 0 || conditionNum >= CONDITIONS_PER_LOCK) {
-        printf("Error: Invalid condition number %d", conditionNum);
+        printf("Error: Invalid condition number %d\n", conditionNum);
         return;
     }
 
     // ensure lock is locked
     if (locks[lockNum].locked == 0) {
-        printf("Error: Lock %d is not locked", lockNum);
+        printf("Error: Lock %d is not locked\n", lockNum);
         return;
     }
 
@@ -360,34 +391,16 @@ extern void threadWait(int lockNum, int conditionNum) {
 extern void threadSignal(int lockNum, int conditionNum) {
     // ensure lockNum is valid
     if (lockNum < 0 || lockNum >= NUM_LOCKS) {
-        printf("Error: Invalid lock number %d", lockNum);
+        printf("Error: Invalid lock number %d\n", lockNum);
         return;
     }
 
     // ensure conditionNum is valid
     if (conditionNum < 0 || conditionNum >= CONDITIONS_PER_LOCK) {
-        printf("Error: Invalid condition number %d", conditionNum);
+        printf("Error: Invalid condition number %d\n", conditionNum);
         return;
     }
 
     // signal the condition
     locks[lockNum].conditions[conditionNum].signaled = 1;
-}
-
-extern int interruptsAreDisabled; // <- this variable is set to 1 if interrupts are disabled, 0 otherwise
-
-/**
- * @brief Disables interrupts.
- */
-static void interruptDisable () {
-    assert (! interruptsAreDisabled ) ;
-    interruptsAreDisabled = 1;
-}
-
-/**
- * @brief Enables interrupts.
- */
-static void interruptEnable () {
-    assert ( interruptsAreDisabled ) ;
-    interruptsAreDisabled = 0;
 }
