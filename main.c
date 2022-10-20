@@ -1,35 +1,38 @@
-/*
- * Simple hello world test
- *
- * Tests the creation of a single thread and its successful return.
- */
-
-#include <stdio.h>
-#include <stdlib.h>
-
 #include "mythreads.h"
+#include <stdlib.h>
+#include <stdio.h>
 
-int interruptsAreDisabled = 0;
+void *thread1() {
+  printf("hello from thread 1\n");
 
-void hello(void* arg)
-{
-	printf("Hello\n");
+  threadYield();
+
+  printf("hello again from thread 1\n");
+
+  return NULL;
 }
 
-int main(void)
-{
+void *thread2() {
+  printf("hello from thread 2\n");
+
+  threadYield();
+
+  printf("hello again from thread 2\n");
+
+  return NULL;
+}
+
+int main() {
+
     threadInit();
+    
+    int thread_zero = threadCreate((thFuncPtr)thread1, NULL);
+    printf("threadCreate 1 #id = %d\n", thread_zero);
 
-    void* vp;
-    thFuncPtr fp;
-    fp = (thFuncPtr) &hello;
-    int id = threadCreate(fp, vp);
-
-    threadYield();
-
-    id = threadCreate(fp, vp);
-
-    void **result;
-    threadJoin(id, result);
-	return 0;
-}
+    int thread_one = threadCreate((thFuncPtr)thread2, NULL);
+    printf("threadCreate 2 #id = %d\n", thread_one);
+  
+    int *result;
+    threadJoin(thread_zero, (void *)&result);
+    printf("joined #0 --> %d.\n", *result);
+};

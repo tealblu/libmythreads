@@ -3,6 +3,9 @@ CPSC 3220 F22 (Sorber)
 Project 2: User Mode Thread Library
 
 KNOWN PROBLEMS:
+threadJoin sometimes returns wrong value
+having trouble reentering a thread after it has been yielded
+
 
 DESIGN:
 I started by fully reading the instructions and creating the necessary files.
